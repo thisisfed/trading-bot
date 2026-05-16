@@ -1,6 +1,6 @@
 # ICS — Internal Convergence Scanner
 
-![tests](https://github.com/thisisfed/trading-bot/actions/workflows/tests.yml/badge.svg)
+[![tests](https://github.com/thisisfed/trading-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/thisisfed/trading-bot/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![python](https://img.shields.io/badge/python-3.11-blue.svg)
 
