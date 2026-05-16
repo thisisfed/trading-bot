@@ -1,0 +1,12 @@
+yfinance>=0.2.40
+pandas>=2.1
+numpy>=1.26
+matplotlib>=3.7
+python-dotenv>=1.0
+requests>=2.31
+pyarrow>=14.0
+tqdm>=4.66
+rich>=13.0
+pytest>=7.4
+# Point-in-time NASDAQ-100 constituent history (not on PyPI — install from GitHub):
+# pip install git+https://github.com/jmccarrell/n100tickers.git

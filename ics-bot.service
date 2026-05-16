@@ -1,0 +1,44 @@
+[Unit]
+Description=ICS Trading Bot (live engine)
+Documentation=https://github.com/your-repo/ics-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User / WorkingDirectory / paths to match your install.
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/ics-bot
+EnvironmentFile=/home/pi/ics-bot/.env
+
+# Pre-flight: runs all startup checks; if any fail, the unit fails to start.
+# Comment this out if you want the bot to start regardless of network/yfinance/etc.
+ExecStartPre=/home/pi/ics-bot/.venv/bin/python -m ics.cli preflight
+
+# Main process
+ExecStart=/home/pi/ics-bot/.venv/bin/python -m ics.cli live
+
+# Write stdout/stderr to journald (use `journalctl -u ics-bot -f` to tail).
+StandardOutput=journal
+StandardError=journal
+
+# Restart on crash but back off so we don't hammer the network.
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/ics-bot/data /home/pi/ics-bot/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
