@@ -134,7 +134,7 @@ class WatchlistFilters:
     vol_short_window: int = 20
     vol_long_window: int = 60
     vol_short_long_ratio: float = 0.85
-    pct_below_52w_high: float = 0.35
+    pct_below_52w_high: float = 0.99
     history_days_for_filters: int = 260
 
 WATCHLIST_FILTERS = WatchlistFilters()
@@ -296,17 +296,17 @@ class RegimeFilters:
     # --- SPY trend filter (replaces the old HMA filter when enabled) ---
     spy_sma_period: int = 200
     sma_slope_lookback: int = 20         # bars over which to check the slope
-    require_spy_above_sma: bool = True
+    require_spy_above_sma: bool = False
 
     # --- VIX regime filter ---
     vix_ticker: str = "^VIX"
     vix_max: float = 25.0                # skip new entries when VIX > this
-    require_vix_below_threshold: bool = True
+    require_vix_below_threshold: bool = False
 
     # --- SPY drawdown filter ---
     spy_drawdown_lookback: int = 60      # days to compute recent high
     max_spy_drawdown_pct: float = 0.05   # skip new entries when DD > 5%
-    require_spy_drawdown_ok: bool = True
+    require_spy_drawdown_ok: bool = False
 
 
 REGIME_FILTERS = RegimeFilters()

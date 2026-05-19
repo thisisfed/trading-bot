@@ -87,8 +87,8 @@ DEFAULT_PARAM_GRID: Dict[str, List] = {
     "atr_stop_mult":      [1.75, 2.0, 2.5],
     "target_rr_multiple": [2.5, 3.0],
     # Regime filter params (let the WFO find the best combo)
-    "vix_max":              [25.0, 999.0],         # 999 = VIX check disabled
-    "max_spy_drawdown_pct": [0.05, 0.99],          # 0.99 = drawdown check disabled
+    "vix_max":              [999.0],         # 999 = VIX check disabled
+    "max_spy_drawdown_pct": [0.99],          # 0.99 = drawdown check disabled
     # NOTE: require_weekly_hma_bullish was REMOVED from the grid (May 2026).
     # Stability analysis showed it as NOISE (54%/46% across pooled windows).
     # Re-add only if stability conditions change (different universe, regime).

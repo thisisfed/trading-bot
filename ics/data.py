@@ -184,7 +184,7 @@ def get_market_caps(tickers: Iterable[str]) -> Dict[str, float]:
     for t in tickers:
         try:
             info = yf.Ticker(t).fast_info
-            mc = info.get("market_cap") if hasattr(info, "get") else getattr(info, "market_cap", None)
+            mc = info.get("marketCap") if hasattr(info, "get") else getattr(info, "marketCap", None)
             if mc and mc > 0:
                 caps[t] = float(mc)
         except Exception as e:
