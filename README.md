@@ -1,240 +1,173 @@
-# ICS — Swing Trading Bot on PIT-NASDAQ-100
+# Random Diptychs
 
-A long-only swing trading bot for the point-in-time NASDAQ-100 universe. Generates entry signals on a daily-bar scan, sizes positions by ATR, manages exits via tiered R:R targets, and notifies via Telegram. Designed to be run in paper mode for validation before any live deployment.
+A personal photography experiment by **Federico Ferrari**. Every click pulls two images side by side from an ongoing pool of stills and short videos — all shot and filmed entirely on iPhone, for the fun of it.
 
-**Status:** Paper trading. ICS v2.0 (May 2026).
+Live at **[random.thisisfed.xyz](https://random.thisisfed.xyz/)**.
 
----
-
-## What the strategy does
-
-Each daily scan, the bot:
-
-1. Refreshes the watchlist from current PIT-NASDAQ-100 membership (via the [n100tickers](https://github.com/jmccarrell/n100tickers) library), filtered for liquidity, market structure, and 200-SMA trend.
-2. For each watchlist name, computes HMA bias, VWAP positioning, Bollinger Band location, and an RSI threshold check. Names with a valid bullish setup generate signals, scored by tier.
-3. Sized by ATR so per-trade risk is constant across the portfolio. Stops are set 1.75 ATR below entry.
-4. Exits via tiered R:R targets (partial profits at 1.5R, 2.5R, with a runner up to 4R+) or stop-loss.
-5. Sends entry/exit/status to Telegram and records all activity to a local SQLite DB.
-
-The signal layer (HMA + VWAP + Bollinger + RSI) by itself produces near-zero per-trade edge. The edge lives in the *wrapper* — ATR sizing, asymmetric R:R, compounding, and the implicit regime filtering provided by the trend-following entry logic.
+There's no menu, no grid, no back button. Tap or press anywhere; once a pair is gone, it's gone.
 
 ---
 
-## v2.0 changes
+## How it works
 
-The v2.0 release is the result of a methodology audit that stripped out overfitting and validated what's actually generating returns:
+The site is three files served statically: `index.html`, `styles.css`, `app.js`. No build step, no framework, no dependencies. Photography is the only thing on screen; everything else is engineered to disappear.
 
-| Change | Reason |
-|---|---|
-| **All three regime filters disabled** (SPY 200-SMA, VIX, SPY-drawdown) | Walk-forward testing showed the explicit regime filters are redundant with the trend-following entry logic. Disabling them improved monthly haircut Sharpe from +1.03 to +1.74. |
-| **52-week-high watchlist filter relaxed to no-op** | The WFO universe (raw PIT-NDX membership) didn't apply this filter; live did. Aligning live to validated universe. |
-| **WFO grid simplified from 72 → 18 combos** | Smaller grid means smaller Bonferroni haircut and less overfitting surface. |
-| **marketCap fetcher fixed** | yfinance attribute name changed; lookup had been silently returning `None`. Cosmetic — the dependent filter is redundant on NDX anyway. |
+A few decisions worth knowing about.
 
----
+### Pair scoring
 
-## Performance (v3 WFO OOS, strategy-only, monthly resampled)
+Pairings aren't random. On first load every image is downsampled to a 128×128 canvas, then summarised by three signals:
 
-5.5 years of out-of-sample data (May 2020 – Nov 2025), £30k starting capital, £750/month contributions subtracted from equity to isolate strategy P&L.
+- a **7-bin lightness histogram** (tonal shape)
+- a **filtered 4-colour palette**, weighted toward the centre of the frame (where the subject usually lives), with desaturated and near-extreme tones excluded
+- the image's **average saturation**
 
-| Metric | ICS v2.0 | Equal-weight BH-NDX | Alpha |
-|---|---|---|---|
-| CAGR | +29.7% | +25.1% | **+4.6%** |
-| Max drawdown | **-11.2%** | -21.9% | -10.7 pts |
-| Monthly Sharpe (Bonferroni haircut @ 18 tests) | **+1.74** | +1.20¹ | **+0.54** |
-| Calmar | 4.20 | 1.16 | +3.04 |
-| Sortino | 4.29 | 1.05 | +3.24 |
-| 2022 return (NDX bear) | **+37.3%** | -12.7% | +50 pts |
-| 2025 return (NDX rally) | +32.3% | +85.5% | -53 pts |
+Palette entries carry both HSL and OKLab coordinates. HSL drives the merge heuristic during palette construction and the hue-family detection in repetition catching (two reds are "the same family" even at different lightnesses). OKLab — a perceptually uniform colour space — drives the actual similarity scoring, since Euclidean distance in OKLab tracks how the eye reads colour difference. HSL gets this wrong in both directions: a soft pink and a deep red read as "close" because hue agrees, and two greys at different lightnesses read as "far" despite both being grey.
 
-¹ Benchmark has no parameter search, so raw is the right comparison.
+`pairScore(a, b)` rewards pairs with:
 
-**Six independent biases removed during validation:** survivorship (PIT-NDX universe), capital contributions, returns autocorrelation, parameter multi-testing (Bonferroni 18-combo grid), three explicit regime filters, one watchlist filter. Plus benchmarked against equal-weight buy-and-hold of the same universe.
+- **palette contrast** (different dominant colours) — the dominant signal, raised to a power so moderate similarity loses ground faster than strong contrast
+- **density contrast** (full-vs-empty composition), gated by palette contrast — so editorial "full vs negative space" pairings surface without false positives from two-blue-but-busy/calm pairs
+- **lightness contrast** (one bright, one dim) — an independent reward for the up-and-down editorial dimension, ungated
+- **tonal cohesion** as a faint tiebreaker
 
----
+…minus penalties for:
 
-## What this strategy is — and isn't
+- **predominant-colour repetition** by hue family (catches "two blues" even at very different lightness)
+- **blank-canvas repetition** — both images dominated by the same low-saturation tone (pale sky + grey wall)
+- **joint desaturation** — pair where neither side carries colour
+- **joint fullness** — both images busy; the eye wants somewhere to rest
+- **joint emptiness** — both images near-empty; minimal-on-minimal feels samey
 
-**It is:** a long-only swing strategy that earns ~+0.5 risk-adjusted alpha and ~+5% CAGR over passive buy-and-hold of the same universe, primarily through bear-market defensiveness and drawdown limitation. Strategy delivered +37% during 2022 (NDX -33%) and survived with -11% max DD vs benchmark -22%.
+Of the N×(N−1)/2 possible pairs, the top 250 are kept. Each click draws from that pool with a quality bias (`Math.random() ** 2`), so the very best pairings dominate without ever showing the same one twice in close succession.
 
-**It isn't:** a strategy that beats passive indexing every year. In strong bull years (2025: BH +85%, strategy +32%), the strategy gives back significant upside in exchange for defensive smoothness. The 2025 underperformance is the cost of the 2022 outperformance — a real trade-off, not a flaw.
+A per-image **guarantee branch** runs ~45% of clicks: instead of drawing from the global top-N, it picks a stale image (one not seen for a while) and pairs it with its highest-scoring partner. This keeps the rotation honest — an image with one popular partner doesn't get starved when the partner is in the recent-block window.
 
-**It depends on:** the HMA trend-following entry logic continuing to act as an implicit regime filter. The strategy has no explicit VIX or market-state gate; bear-market protection comes from HMA not firing bullish on falling names. If a future regime breaks this implicit filtering (e.g. choppy markets with frequent false HMA flips), the alpha mechanism could weaken.
+**Favorites** override the algorithm's instincts for a small list of hand-picked photos. The scorer sometimes "correctly" deprioritises images that are hard to pair — palette-narrow, very desaturated, very dark — even when those are images the photographer genuinely loves. Adding an image number to `FAVORITE_IMAGES` boosts its staleness weight inside the guarantee branch by a configurable factor (default 4×), so it surfaces meaningfully more often without changing how partners are selected. It's a long-term rotation tilt, not a "show this next" override.
+
+### Theme
+
+`html.night` is set **before first paint** by inline script in the `<head>`. Sunrise and sunset are computed from a longitude derived from the timezone offset (no geolocation prompt, no third-party call) and a latitude estimated from the IANA zone region. The theme re-evaluates every minute so the palette flips live at the threshold; gated behind `document.visibilityState === 'visible'` so a backgrounded tab is free.
+
+The threshold is **civil twilight (−6° sun altitude)** rather than geometric sunrise/sunset (−0.83°) — at −0.83° the algorithm would flip to night while the sky is still bright. Civil twilight matches the visual feel of "the sun is out" by extending the day window by ~30 minutes on each side.
+
+### Loading
+
+Image discovery is parallel batched `HEAD` probes (no manifest needed). The splash shows a smooth `Loading… X%` counter that animates 0→100 over real load progress — capped at 60%/s so even a warm cache shows a legible climb instead of a 0→100 flicker. Every image's display variant is fetched during the splash, so once the gate lifts, every diptych in the session is already cached and decode is sub-ms.
+
+Videos are **not** preloaded. They're registered with a neutral colour signature so they stay eligible for pair scoring, but their MP4 bytes only fetch when a pair containing them is selected. The first pair is forced to images-only via `pickPair(arr, { allowVideos: false })`, since a 2–4 s video fetch behind the consent card would leave the gate stuck.
+
+For accurate video colour pairing, drop a **poster JPG** next to each video — `ff{n}-poster.jpg` alongside `ff{n}.mp4`. The site analyses the poster with the same colour pipeline as the photos (centre-weighted palette, OKLab, density, etc.), so videos pair on real colour rather than a neutral signature. Generate them with ffmpeg:
+
+```bash
+for f in videos/ff*.mp4; do
+  N="${f%.mp4}"
+  ffmpeg -ss 1 -i "$f" -frames:v 1 -q:v 3 "${N}-poster.jpg"
+done
+```
+
+Pick the timestamp (`-ss 1`) that best represents the video. The poster is loaded by the splash like any image and is opt-in per video: videos without posters fall back to runtime frame extraction, then to the neutral signature on failure. Adding posters is the recommended way to get videos pairing correctly, especially because runtime extraction is unreliable on iOS Safari (offscreen videos often won't load, and `canvas.drawImage` can return black frames before play has been called).
+
+### Shareable pairs
+
+Every diptych has a URL. `history.replaceState` fires inside `loadDiptych` on every advance, so `location.href` is always the canonical address of what's on screen. Desktop: press **S** to copy. Mobile: **long-press** the diptych. The S key uses `navigator.clipboard.writeText` with a `legacyCopy()` fallback for older browsers; the long-press uses `navigator.share` for the native share sheet on iOS/Android.
+
+### Interludes
+
+Every 4–7 clicks an interlude card appears: **contact**, **share**, or **welcome** — each shown **at most once per session**. After all three have appeared the gallery becomes a pure sequence of diptychs. The first interlude is always the share card if still unseen, so the user learns the share gesture before they have any way to discover it.
 
 ---
 
 ## Project layout
 
 ```
-ics/
-├── cli.py              entry point: backtest, wfo, live, scan, refresh-watchlist
-├── config.py           strategy, regime filter, contribution, and live params
-├── backtest.py         single-spec backtest engine
-├── wfo.py              walk-forward optimisation (18-combo grid)
-├── signals.py          HMA/VWAP/Bollinger/RSI signal generation
-├── indicators.py       technical indicator implementations
-├── data.py             yfinance loaders, FX, market caps
-├── watchlist.py        liquidity/structure filters; produces watchlist.csv
-├── constituents.py     PIT-NDX membership accessor (via n100tickers)
-├── sp500_constituents.py  PIT-S&P 500 (alternate universe, untested in v2.0)
-├── regime.py           SPY-SMA / VIX / SPY-DD filter checks (all disabled in v2.0)
-├── live.py             intraday/daily scan loop + Telegram handlers
-├── paper_trader.py     paper-mode position management
-├── notifier.py         Telegram integration
-├── reporter.py         writes equity_gbp.csv / trades.csv / plots
-├── montecarlo.py       MC bootstrap on trade list
-└── db.py               SQLite layer
-src/
-├── 25_sharpe_analysis.py    per-trade Sharpe + Harvey-Liu haircut
-├── 26_drawdown_analysis.py  drawdown metrics from equity_gbp.csv
-├── 27_equity_sharpe_analysis.py  equity-level Sharpe with autocorr resample
-└── 28_buyhold_benchmark.py  equal-weight PIT-NDX buy-and-hold comparison
-tests/                  pytest suite covering core engine, regime, paper trader, slippage
-ics-bot.service         systemd unit for Pi deployment
-DEPLOYMENT.md           Pi 5 / Docker deployment runbook
+.
+├── index.html              # gate cards, diptych container, head-script theme
+├── styles.css              # tokens, transitions, overlay treatment
+├── app.js                  # everything else
+├── images/
+│   ├── jpg/                # ff{N}.jpg (canonical) and ff{N}-{w}.jpg variants
+│   └── avif/               # ff{N}.avif and ff{N}-{w}.avif variants
+└── videos/
+    ├── ff{N}.mp4
+    └── ff{N}-poster.jpg    # representative frame, for colour analysis (optional but recommended)
 ```
 
----
+Images are discovered by probing `images/jpg/ff{1}.jpg`, `ff{2}.jpg`, … in parallel batches of 20 until a batch returns nothing AND a probe two batches ahead also 404s (handles small gaps in numbering without committing to wasted requests). Videos are discovered the same way in their own namespace — `ff1.mp4` is a different asset than `ff1.jpg`, addressed as `v1` in share URLs (`#5,v12`).
 
-## Setup
+Each image needs variants at three widths — 600, 1000, 1500 — in both formats:
 
-Requirements: Python 3.11+, a Telegram bot token, a yfinance-accessible network.
-
-```bash
-git clone https://github.com/<you>/ics.git
-cd ics
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install git+https://github.com/jmccarrell/n100tickers.git   # PIT-NDX
-cp .env.example .env
-# Edit .env: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TRADING_MODE=paper, TZ
+```
+images/jpg/ff42-600.jpg
+images/jpg/ff42-1000.jpg
+images/jpg/ff42-1500.jpg
+images/avif/ff42-600.avif
+…
 ```
 
----
-
-## Usage
-
-All CLI commands run from the project root:
-
-```bash
-# Refresh the watchlist (PIT-NDX → liquidity-filtered universe)
-python -m ics.cli refresh-watchlist
-
-# One-shot backtest with default params on the current watchlist
-python -m ics.cli backtest --from-watchlist --start 2019-01-01 --name my_test
-
-# Walk-forward OOS validation (5-10 min for the 18-combo grid)
-python -m ics.cli wfo --start 2019-01-01 \
-    --is-days 504 --oos-days 252 --step-days 252 \
-    --objective sharpe --mc --name my_wfo
-
-# Run a single live scan (one-shot, no loop)
-python -m ics.cli scan
-
-# Start the live engine (typically run under systemd; honours TRADING_MODE)
-python -m ics.cli live
-```
-
-Reports land in `data/reports/<name>/` with `equity_gbp.csv`, `trades.csv`, `summary.txt`, and equity/drawdown plots.
+The browser picks the smallest variant ≥ `50vw × devicePixelRatio` via `srcset` + `sizes="50vw"`. A retina laptop reaches for `1000`; a 3× DPR phone gets `600` and looks fine because AVIF compresses gracefully when slightly under target.
 
 ---
 
-## Analysis tooling
+## Configuration
 
-Four standalone scripts under `src/` evaluate the strategy against academic thresholds:
+All knobs live at the top of `app.js`. The defaults are tuned for ~150 images; adjust to taste.
 
-```bash
-# Per-trade Sharpe with Harvey-Liu Bonferroni haircut
-python src/25_sharpe_analysis.py data/reports/my_wfo/trades.csv --tests 18
-
-# Drawdown and risk-adjusted metrics from the equity curve
-python src/26_drawdown_analysis.py data/reports/my_wfo/equity_gbp.csv \
-    --contributions data/reports/my_wfo/contributions_gbp.csv
-
-# Equity-level Sharpe with optional monthly resample to dampen autocorrelation
-python src/27_equity_sharpe_analysis.py data/reports/my_wfo/equity_gbp.csv \
-    --contributions data/reports/my_wfo/contributions_gbp.csv \
-    --tests 18 --resample M
-
-# Equal-weight buy-and-hold benchmark on the same universe / dates / contributions
-python src/28_buyhold_benchmark.py
-python src/27_equity_sharpe_analysis.py data/reports/buyhold_ndx/equity_gbp.csv \
-    --contributions data/reports/buyhold_ndx/contributions_gbp.csv \
-    --tests 1 --resample M
-```
-
-The `--tests` flag applies the Harvey-Liu (2015) Bonferroni-style haircut for parameter-search multi-testing. The current WFO grid has 18 combinations; for a single pre-specified backtest use `--tests 1`.
-
----
-
-## Telegram commands
-
-The live bot accepts these commands from the configured chat:
-
-| Command | Action |
-|---|---|
-| `/status` | Bot health, last scan time, next scan, scan mode |
-| `/paper` | Current paper portfolio: equity, P&L, open positions, win rate |
-| `/scan` | Trigger a manual scan immediately |
-| `/refresh` | Force a watchlist refresh |
-| `/regime` | Current market-regime view (informational; filters disabled in v2.0) |
-| `/equity` | Equity curve snapshot |
-| `/help` | List commands |
-
-`/paper` is read-only — it does not open trades. The bot opens paper positions automatically on its scan schedule (see `LIVE_PARAMS.scan_mode`).
+| Const | Default | What it does |
+|---|---|---|
+| `TOP_PAIRS_POOL` | `250` | Best-N pairs eligible for selection. Hard floor on quality — pairs ranked worse never appear. For a pool of ~100 items, this is the top ~5% of all possible pairs and yields 500 distinct diptychs. |
+| `RECENT_CLICKS_BLOCK` | `25` | An image can't reappear for this many clicks after being shown. With ~100 images, ~50 are locked at any time. |
+| `CONTACT_MIN` / `CONTACT_MAX` | `4` / `7` | Range for the random interlude cadence. |
+| `GUARANTEE_RATE` | `0.45` | Probability a click draws from the per-image staleness pool rather than the global top-N. ~1 in 2. |
+| `VIDEO_RATE` | `0.35` | Per-click probability of a video pair, once the minimum gap has elapsed. |
+| `VIDEO_MIN_GAP` | `1` | Photo-only clicks required between videos. |
+| `COLOR_SAMPLE_SIZE` | `128` | Side length of the downsampled analysis canvas. |
+| `PALETTE_SIZE` / `HIST_BINS` | `4` / `7` | Colour summary dimensions. |
+| `TONAL_WEIGHT`, `PALETTE_WEIGHT`, `DENSITY_WEIGHT`, `LIGHTNESS_WEIGHT`, `SAT_WEIGHT` | `0.05`, `0.45`, `0.35`, `0.20`, `0.05` | Pair-score reward weights. |
+| `PALETTE_CONTRAST_POWER` | `2.0` | Exponent applied to palette contrast — concentrates reward at the top of the range. At 2.0, a pair with 0.5 contrast keeps only 25% of full reward, 0.3 keeps 9%. Set 1.0 to disable; 1.5 is a gentler intermediate; 3.0 is very aggressive. |
+| `REPETITION_PENALTY` | `1.1` | How hard to punish two-of-the-same-hue pairs. |
+| `JOINT_DESAT_PENALTY` / `JOINT_DESAT_THRESHOLD` | `0.5` / `0.30` | Penalty for pairs where neither side has colour life, and the avgSat threshold below which the penalty engages. |
+| `JOINT_FULL_PENALTY` / `JOINT_FULL_THRESHOLD` | `0.45` / `0.55` | Penalty for pairs where BOTH images are busy, and the density threshold above which "busy" starts. |
+| `JOINT_EMPTY_PENALTY` / `JOINT_EMPTY_THRESHOLD` | `0.30` / `0.35` | Penalty for pairs where BOTH images are near-empty, and the density threshold below which "empty" starts. |
+| `FALLBACK_TRUST_PENALTY` | `0.40` | Penalty applied to any pair where one side lacks a real colour signature (a video without a poster image — see "Loading" above). Keeps fallback-signed videos out of the global top-N pool until a poster is generated; they still rotate via the per-image guarantee branch. Set to 0 to disable. |
+| `SIBLING_GROUPS` | `[['97','98']]` | Near-duplicate images that should block each other's slot in `recent`. |
+| `FAVORITE_IMAGES` / `FAVORITE_BOOST` | 15 image numbers / `4.0` | Image numbers to give extra rotation priority. Their staleness is multiplied by the boost inside the per-image guarantee branch, so they cycle back roughly `BOOST×` more often than non-favorites would on the algorithm's judgement alone. |
+| `PROGRESS_RATE_PER_SEC` | `60` | Max climb rate of the `Loading… X%` counter. |
+| `SPLASH_MAX_WAIT_MS` | `30000` | Safety cap; splash fades even if loading hasn't completed. |
 
 ---
 
-## Deployment workflow
+## Browser support
 
-The honest deployment path:
+Targets the last two versions of Chrome, Safari, Firefox, and Edge. iOS Safari 15.4+ for `:focus-visible`; older versions get the fallback `:focus` reset (no lime keyboard ring, but no UA blue ring either). The Web Share API is used where available with a `legacyCopy` execCommand fallback. AVIF is the preferred format with JPG as a universal fallback via `<picture>`.
 
-1. **Run paper mode for 3-6 months.** `TRADING_MODE=paper` in `.env`. The bot scans on schedule and records virtual trades to the DB.
-2. **Track live equity Sharpe weekly** via `/paper` and the `26_/27_` analysis scripts on the live `equity_gbp.csv`.
-3. **First gate (3 months):** if live equity Sharpe ≥ 0.5, continue. If < 0, pause and investigate. The expected paper-to-live haircut is 30-50% — a 1.74 backtest Sharpe might land 0.8-1.2 live.
-4. **Second gate (6 months):** if live Sharpe ≥ 0.8 *and* max DD ≤ 10%, consider switching to `TRADING_MODE=live` at 25-50% target position size.
-5. **Full size (12 months):** if both metrics hold at small size, scale to full size.
+A handful of touchy things that get explicit defences in CSS or JS:
 
-The systemd unit at `ics-bot.service` runs the bot under a non-root user; logs via `journalctl -u ics-bot.service`. See `DEPLOYMENT.md` for the Pi 5 setup details.
-
----
-
-## Caveats and known limitations
-
-- **Long-only.** No short component, no portfolio hedging. In a sustained bear market lasting >12 months (e.g. 2000-2002), the strategy has not been forward-tested.
-- **Universe-specific.** Validated on NASDAQ-100. Performance on S&P 500 or other indices is untested in v2.0 — different universe likely produces different results.
-- **Concurrent position correlation.** The bot can hold multiple correlated tech names simultaneously. A sector cap or vol-target would reduce this; both are on the v3.0 candidate list.
-- **No fee/slippage modelling in the backtest.** Real-world execution will incur ~10-20 bps per round-trip in fees and another 5-15 bps in slippage. Already mostly factored into the live Sharpe expectation.
-- **2025 underperformance is real.** Equal-weight buy-and-hold returned +85% in 2025; the strategy returned +32%. This will repeat in any strong narrow bull market. The strategy earns its alpha in bear and choppy regimes — be prepared for stretches of relative underperformance.
+- **iOS tap-highlight blue** — neutralised with `-webkit-tap-highlight-color: transparent` on every tappable surface
+- **iOS phone-number auto-styling** — disabled with `<meta name="format-detection" content="telephone=no, …">`
+- **iOS image long-press save callout** — blocked with `-webkit-touch-callout: none` on the diptych
+- **iOS muted-autoplay** — videos get `muted` + `playsinline` set both as attribute and JS property because iOS resets the property on `src` change
+- **iOS Safari background page suspension** — `img.decode()` is raced against a 5 s timeout so a screen-lock mid-load can't wedge the gallery permanently
+- **iOS Safari `<video>` vs `<img>` alignment** — iOS gives video its own native composite layer, which rounds sub-pixel transforms differently from images. Vertical centering uses `top: 25vh` (resolved at layout, no transform) so both elements land on the same pixel row. iOS Safari also leaves a sub-pixel column of letterbox slack at the leading edge of `<video>` with `object-fit: contain`; the right-panel video is shifted 1px past the centerline so the slack lands inside the panel's `overflow: hidden` clip rather than on the centerline.
 
 ---
 
-## Roadmap (post-paper-validation)
+## Deploying
 
-If 6 months of paper trading confirms the live Sharpe holds ≥ 0.8, the v3.0 candidate list is:
+The site is fully static. Drop the three files plus the `images/` and `videos/` directories onto any host that serves them — Cloudflare Pages, Netlify, GitHub Pages, S3+CloudFront, plain nginx. There's no server-side component. Make sure:
 
-1. **Volatility targeting** — scale total portfolio exposure to target 15% annualised vol. Highest-EV legitimate Sharpe improvement.
-2. **Sector concentration limits** — cap N positions per GICS sector to reduce concurrent correlation.
-3. **Earnings filter** — exclude entries within 5 trading days of scheduled earnings.
-4. **Mean-reversion overlay** — a second, low-correlation strategy on the same universe for combined-Sharpe diversification.
+- The host serves `image/avif` with the correct content-type (most do by default in 2025)
+- The host supports `HEAD` requests on static files (almost universal; the only common exception is some misconfigured object storage)
+- HTTP/2 is enabled — discovery fires 20 parallel `HEAD` requests per batch and benefits from multiplexing
 
-None of these are committed; each requires the same validation rigour as v2.0 before adoption.
-
----
-
-## Disclaimer
-
-This software is provided for educational and research purposes only. It is not financial advice and nothing in this repository constitutes a recommendation to buy or sell any security. Trading involves substantial risk of loss and is not suitable for every investor. Past performance — including any backtests, walk-forward results, or paper-trading metrics presented here — is not indicative of future results. The author assumes no responsibility for any losses incurred from use of this software. Use at your own risk.
+Google Analytics is loaded conditionally after consent (`G-J2Q38DS42K` — change in `app.js` if you fork). The consent card complies with GDPR's "explicit, deliberate choice" requirement; the decision is stored in `localStorage` under the key `ff-analytics-consent`.
 
 ---
 
-## License
+## Credits
 
-MIT — see [LICENSE](LICENSE).
+Photography © Federico Ferrari, 2026. All rights reserved.
 
----
+Code is the photographer's own; comments throughout the source explain the reasoning behind every non-obvious decision. Contributions and bug reports welcome.
 
-## Acknowledgements
-
-PIT-NDX membership via [n100tickers](https://github.com/jmccarrell/n100tickers) by Jason McCarrell. yfinance for price data. Methodology drawing on Harvey & Liu (2015) "Backtesting" for the Bonferroni haircut framework.
+Contact: **ciao@thisisfed.xyz** · [thisisfed.xyz](https://thisisfed.xyz)

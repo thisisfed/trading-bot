@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en" class="gated">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/x-icon" href="/favicon.ico">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <!-- iOS Safari auto-detects phone numbers / email addresses / dates
+       in body text and wraps them in its own blue-underlined link
+       elements, ignoring the surrounding author styling. The contact
+       card already wraps the phone in <a href="tel:…">, but iOS can
+       still apply its detection on top. Turning the feature off
+       removes that whole class of forced-blue artifact. -->
+  <meta name="format-detection" content="telephone=no, date=no, address=no, email=no">
+
+  <!-- ═══════════════════════════════════════════════
+       THEME — SUNRISE / SUNSET
+
+       Sets `html.night` BEFORE first paint so the splash
+       doesn't flash white when the user is on a black
+       site (or vice versa). Sunrise/sunset are computed
+       from a longitude derived from the timezone offset
+       and a latitude estimated from the IANA zone region
+       — no geolocation prompt, no third-party calls. The
+       same logic re-runs every minute to flip the theme
+       live as the threshold is crossed.
+  ═══════════════════════════════════════════════ -->
+  <script>
+    (function () {
+      function standardOffsetMin() {
+        /* getTimezoneOffset on a current date reflects whatever DST is in
+           effect right now, which is wrong for estimating geographic
+           longitude — BST visitors would be placed at 15°E instead of 0°,
+           shifting sunset an hour earlier. The STANDARD (non-DST) offset
+           for any zone is reliably the larger of January's and July's
+           offsets, since DST always advances the clock (= more negative
+           offset). This holds in both hemispheres. */
+        var y   = new Date().getFullYear();
+        var jan = new Date(y, 0, 1).getTimezoneOffset();
+        var jul = new Date(y, 6, 1).getTimezoneOffset();
+        return Math.max(jan, jul);
+      }
+
+      function estimateLatLng() {
+        /* Longitude from the STANDARD timezone offset: each hour west of
+           UTC ≈ 15° west. Using getTimezoneOffset() on a current Date
+           would fold DST into the result and place BST visitors at the
+           wrong longitude — see standardOffsetMin above. */
+        var lng = -standardOffsetMin() / 4;
+        var lat = 40;
+        try {
+          var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+          if      (/^Europe\//.test(tz))    lat = 50;
+          else if (/^Asia\//.test(tz))      lat = 30;
+          else if (/^Africa\//.test(tz))    lat = 5;
+          else if (/^Australia\//.test(tz)) lat = -30;
+          else if (/^Pacific\//.test(tz))   lat = -15;
+          else if (/^Antarctica\//.test(tz)) lat = -75;
+          /* Southern-hemisphere Americas — without this they'd inherit the
+             40°N default and have sunrise/sunset offset by a season. */
+          else if (/^America\/(Argent|Sao_Paulo|Santiago|Buenos|Asunc|Caracas|La_Paz|Lima|Bogota|Guayaquil|Quito|Cayenne|Paramaribo|Montevideo|Punta_Arenas|Fortaleza|Recife|Manaus|Rio_Branco|Belem|Bahia)/.test(tz)) lat = -20;
+        } catch (e) {}
+        return { lat: lat, lng: lng };
+      }
+
+      function computeSun(date, lat, lng) {
+        /* Standard solar-calculator formulas. -0.83° altitude is the civil
+           sunrise/sunset definition (atmospheric refraction + sun's disc).
+           Returns sunrise/sunset as Unix-ms numbers; polar regions return
+           a flag instead of times. */
+        var rad = Math.PI / 180;
+        var jd  = date.getTime() / 86400000 + 2440587.5;
+        /* Math.round, not floor: Julian Dates roll over at noon UTC, so
+           before noon UTC `jd - 2451545.0` has a fractional part that
+           floor discards — picking yesterday's n. That gave London at
+           09:00 BST (08:00 UTC) the previous day's sunset and stuck the
+           theme in night through the entire morning. Rounding to the
+           nearest integer gives the correct day-number for whichever
+           UTC day contains the current moment. */
+        var n   = Math.round(jd - 2451545.0 + 0.0008);
+        var J   = n - lng / 360;
+        var M   = (357.5291 + 0.98560028 * J) % 360;
+        var C   = 1.9148 * Math.sin(M * rad)
+                + 0.0200 * Math.sin(2 * M * rad)
+                + 0.0003 * Math.sin(3 * M * rad);
+        var lam = (M + C + 180 + 102.9372) % 360;
+        var Jt  = 2451545.0 + J
+                + 0.0053 * Math.sin(M * rad)
+                - 0.0069 * Math.sin(2 * lam * rad);
+        var del = Math.asin(Math.sin(lam * rad) * Math.sin(23.44 * rad));
+        /* -6° = civil twilight. The traditional sunrise/sunset altitude
+           of -0.83° (sun's disc tangent to horizon, accounting for
+           atmospheric refraction) is technically correct but visually
+           wrong for this site: at -0.83° the algorithm flips to night
+           the moment the sun's disc disappears, but there's still
+           plenty of natural light — sky is bright, "the sun is out"
+           from a user's perspective. -6° is the civil-twilight threshold,
+           the point at which the sky is dim enough that artificial
+           light becomes necessary. Extends the "day" window by roughly
+           30 minutes on each side of geometric sunrise/sunset, which
+           matches the visual feel of the daylight period. */
+        var co  = (Math.sin(-6 * rad) - Math.sin(lat * rad) * Math.sin(del))
+                / (Math.cos(lat * rad) * Math.cos(del));
+        if (co < -1) return { polar: 'day' };
+        if (co >  1) return { polar: 'night' };
+        var w = Math.acos(co) / rad;
+        return {
+          sunrise: (Jt - w / 360 - 2440587.5) * 86400000,
+          sunset:  (Jt + w / 360 - 2440587.5) * 86400000
+        };
+      }
+
+      function isNight(sun) {
+        if (sun.polar === 'day')   return false;
+        if (sun.polar === 'night') return true;
+        var now = Date.now();
+        return now < sun.sunrise || now >= sun.sunset;
+      }
+
+      var coords = estimateLatLng();
+      var meta   = null;
+
+      function apply() {
+        var sun   = computeSun(new Date(), coords.lat, coords.lng);
+        var night = isNight(sun);
+        document.documentElement.classList.toggle('night', night);
+        /* Update theme-color so iOS/Android status-bar matches the page.
+           Meta lookup is deferred until the tag has been parsed. */
+        if (!meta) meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', night ? '#000000' : '#ffffff');
+      }
+
+      apply();
+
+      /* Enable CSS transitions only after first paint so the initial
+         render lands in the correct palette without a fade-from-wrong. */
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () {
+          document.documentElement.classList.add('theme-ready');
+        }, { once: true });
+      } else {
+        document.documentElement.classList.add('theme-ready');
+      }
+
+      /* Re-evaluate every minute so the transition fires live when the
+         user is on the page at sunset/sunrise. Recomputing each tick also
+         handles midnight rollover for long sessions without extra logic.
+         Skip the work while the tab is backgrounded (browsers throttle
+         setInterval there anyway, but this keeps the contract explicit)
+         and run apply() immediately when the tab returns so the theme
+         catches up after a long background. */
+      setInterval(function () {
+        if (document.visibilityState === 'visible') apply();
+      }, 60000);
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') apply();
+      });
+    })();
+  </script>
+
+  <!-- ═══════════════════════════════════════════════
+       SEO — scoped to this subdomain only.
+  ═══════════════════════════════════════════════ -->
+  <title>Federico Ferrari – Random Diptychs</title>
+  <meta name="description" content="Random Diptychs — an interactive pairing project by London-based fashion and editorial photographer Federico Ferrari. A fresh diptych on every click, drawn from work for Prada, AnOther Magazine, Grazia, Il Sole 24 Ore and Max Mara.">
+  <meta name="keywords" content="Random Diptychs, Federico Ferrari, photography pairings, fashion photography, editorial photography, interactive portfolio, diptych, photographer London">
+  <meta name="author" content="Federico Ferrari">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://random.thisisfed.xyz/">
+
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://random.thisisfed.xyz/">
+  <meta property="og:title" content="Federico Ferrari – Random Diptychs">
+  <meta property="og:description" content="An interactive pairing project from fashion and editorial photographer Federico Ferrari. A fresh diptych on every click.">
+  <meta property="og:image" content="https://random.thisisfed.xyz/federicoferrari-rd.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="A diptych: an empty circular sign frame against pale blue sky, and a builder's bag stenciled with the numbers 1 through 5.">
+  <meta property="og:locale" content="en_GB">
+  <meta property="og:site_name" content="Federico Ferrari — Random Diptychs">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Federico Ferrari – Random Diptychs">
+  <meta name="twitter:description" content="An interactive pairing project from fashion and editorial photographer Federico Ferrari. A fresh diptych on every click.">
+  <meta name="twitter:image" content="https://random.thisisfed.xyz/federicoferrari-rd.jpg">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "Federico Ferrari — Random Diptychs",
+    "url": "https://random.thisisfed.xyz/",
+    "description": "An interactive pairing project from fashion and editorial photographer Federico Ferrari. A fresh diptych on every click.",
+    "inLanguage": "en-GB",
+    "author": {
+      "@type": "Person",
+      "name": "Federico Ferrari",
+      "jobTitle": "Photographer",
+      "email": "ciao@thisisfed.xyz",
+      "telephone": "+44 (0) 7547 02 63 00",
+      "image": "https://random.thisisfed.xyz/federicoferrari-rd.jpg"
+    }
+  }
+  </script>
+
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+<div id="splash">
+  <div class="inner">
+    <h1>
+      <span class="line">Federico Ferrari</span>
+      <!-- Subtitle is static — JS updates it to the real pair total
+           after discovery (TARGET = min(TOP_PAIRS_POOL, n×(n-1)/2) × 2)
+           but if discovery turns out to match the placeholder, no
+           update is needed. Change the "500" here if you change
+           TOP_PAIRS_POOL so the first paint isn't visibly wrong. -->
+      <span class="line subtitle">500 Random Diptychs</span>
+      <!-- Loading progress. Starts as plain "Loading…" with no
+           percentage — the rAF loop in start() appends "X%" only once
+           displayPct has climbed above 0, so a warm-cache visit never
+           shows the counter frozen at 0% during discovery. -->
+      <span class="line loading">Loading…</span>
+    </h1>
+  </div>
+</div>
+
+<div id="diptych">
+  <div class="panel left">
+    <div class="layer">
+      <picture>
+        <source type="image/avif" srcset="" sizes="50vw">
+        <img alt="" sizes="50vw">
+      </picture>
+    </div>
+    <div class="layer">
+      <picture>
+        <source type="image/avif" srcset="" sizes="50vw">
+        <img alt="" sizes="50vw">
+      </picture>
+    </div>
+  </div>
+  <div class="panel right">
+    <div class="layer">
+      <picture>
+        <source type="image/avif" srcset="" sizes="50vw">
+        <img alt="" sizes="50vw">
+      </picture>
+    </div>
+    <div class="layer">
+      <picture>
+        <source type="image/avif" srcset="" sizes="50vw">
+        <img alt="" sizes="50vw">
+      </picture>
+    </div>
+  </div>
+</div>
+
+<div id="contact" class="interlude" aria-hidden="true">
+  <div class="inner">
+    <a class="line" id="contact-email" rel="nofollow"></a>
+    <a class="line" id="contact-phone" rel="nofollow"></a>
+  </div>
+</div>
+
+<div id="share" class="interlude" aria-hidden="true">
+  <div class="inner">
+    <span class="line">There's no back button</span>
+    <span class="line">Once a pair is gone, it's gone</span>
+    <!-- Visual gap separating the "rule of the gallery" lines above
+         from the gesture instruction below. Matches the &nbsp; spacer
+         pattern used on the #welcome card so the two intro-style
+         interludes share typographic rhythm. -->
+    <span class="line">&nbsp;</span>
+    <!-- Plain span, not an anchor — the instruction is informational,
+         not the trigger. Sharing happens via the S key (desktop) or
+         a long-press on the diptych (mobile); both have their own
+         handlers (see KEY/SHARE shortcuts further down). The label is
+         set dynamically at page init based on whether the device is
+         touch-primary: "Long press to share" on phones/tablets,
+         "Press S to share" on pointer devices. Clicks on this span
+         fall through to the .interlude background-dismiss path. -->
+    <span class="line" id="share-trigger">Press S to share</span>
+  </div>
+</div>
+
+<div id="welcome" class="interlude" aria-hidden="true">
+  <div class="inner">
+    <span class="line">An evolving concept entirely shot on iPhone</span>
+    <span class="line">© 2026, All rights reserved</span>
+  </div>
+</div>
+
+<div id="privacy" aria-hidden="true">
+  <div class="inner">
+    <p class="privacy-text">This site uses Google Analytics with anonymised IP addresses to understand how the diptychs are explored. No personal data, no cross-site tracking, no advertising profiles. Your choice is remembered locally on your device.</p>
+    <p class="privacy-actions">
+      <a id="privacy-accept" role="button">Accept</a> / <a id="privacy-decline" role="button">Decline</a>
+    </p>
+  </div>
+</div>
+
+<div id="consent" class="interlude" aria-hidden="true">
+  <div class="inner">
+    <span class="line">Analytics</span>
+    <span class="line"><a id="consent-accept" role="button">Accept</a> / <a id="consent-decline" role="button">Decline</a>, <a id="consent-why" role="button">Why?</a></span>
+  </div>
+</div>
+
+<!-- Share toast — brief "Link copied" overlay shown after the user
+     triggers a share via S key (desktop) or long-press (mobile). -->
+<div id="share-toast" aria-live="polite" aria-hidden="true">
+  <span id="share-toast-text">Link copied</span>
+</div>
+
+
+<script type="text/javascript" src="/unprotected/back_to_spaceship.js?hash=4975d460e508829e8fb64d3962bc44ad35f3a95a"></script>
+
+</body>
+</html>
