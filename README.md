@@ -1,290 +1,234 @@
-# ICS — Internal Convergence Scanner
+# ICS — Swing Trading Bot on PIT-NASDAQ-100
 
-[![tests](https://github.com/thisisfed/trading-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/thisisfed/trading-bot/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![python](https://img.shields.io/badge/python-3.11-blue.svg)
+A long-only swing trading bot for the point-in-time NASDAQ-100 universe. Generates entry signals on a daily-bar scan, sizes positions by ATR, manages exits via tiered R:R targets, and notifies via Telegram. Designed to be run in paper mode for validation before any live deployment.
 
-Swing-trading bot for US tech / AI / momentum stocks, sized in **GBP** for a
-**Robinhood UK ISA** (£30,000 starting capital). Built for a Mac dev box and
-Raspberry Pi 5 production with auto-restart, scheduled scans and Telegram
-alerts.
-
-**This is a personal learning project.** It does not place orders automatically;
-it sends alerts. See the [Disclaimer](#disclaimer) at the end.
+**Status:** Paper trading. ICS v2.0 (May 2026).
 
 ---
 
-## Highlights
+## What the strategy does
 
-- **Event-driven backtester** with deterministic fills and an explicit cost
-  model for the Robinhood UK ISA (SEC fee + TAF + FX markup + slippage).
-- **Real walk-forward optimisation** — grid search on in-sample windows,
-  evaluated on untouched out-of-sample windows, OOS equity curves stitched
-  end-to-end.
-- **Monte Carlo validation** in both parametric and trade-shuffle variants
-  to estimate the luck component of any single backtest path.
-- **Regime filter** so signals only fire when broader market structure
-  agrees.
-- **Live engine** with paper-trading mode, market-hours scheduler, clean
-  SIGTERM handling, and a Telegram command listener.
-- **Dockerised** and shipped with a hardened systemd unit for Pi deployment.
-- **18 test files** covering signals, sizing, slippage, regime, paper
-  trader and assorted edge cases.
+Each daily scan, the bot:
+
+1. Refreshes the watchlist from current PIT-NASDAQ-100 membership (via the [n100tickers](https://github.com/jmccarrell/n100tickers) library), filtered for liquidity, market structure, and 200-SMA trend.
+2. For each watchlist name, computes HMA bias, VWAP positioning, Bollinger Band location, and an RSI threshold check. Names with a valid bullish setup generate signals, scored by tier.
+3. Sized by ATR so per-trade risk is constant across the portfolio. Stops are set 1.75 ATR below entry.
+4. Exits via tiered R:R targets (partial profits at 1.5R, 2.5R, with a runner up to 4R+) or stop-loss.
+5. Sends entry/exit/status to Telegram and records all activity to a local SQLite DB.
+
+The signal layer (HMA + VWAP + Bollinger + RSI) by itself produces near-zero per-trade edge. The edge lives in the *wrapper* — ATR sizing, asymmetric R:R, compounding, and the implicit regime filtering provided by the trend-following entry logic.
 
 ---
 
-## Security
+## v2.0 changes
 
-`.env` is never committed. It holds the Telegram bot token, which functions as
-a password. The repo ships `.env.example` as a template — copy it to `.env`
-locally and fill in real values. `.gitignore` excludes `.env` and all generated
-artefacts (databases, logs, caches).
+The v2.0 release is the result of a methodology audit that stripped out overfitting and validated what's actually generating returns:
 
-All credentials are read via `os.getenv(...)`; no secrets live in source.
+| Change | Reason |
+|---|---|
+| **All three regime filters disabled** (SPY 200-SMA, VIX, SPY-drawdown) | Walk-forward testing showed the explicit regime filters are redundant with the trend-following entry logic. Disabling them improved monthly haircut Sharpe from +1.03 to +1.74. |
+| **52-week-high watchlist filter relaxed to no-op** | The WFO universe (raw PIT-NDX membership) didn't apply this filter; live did. Aligning live to validated universe. |
+| **WFO grid simplified from 72 → 18 combos** | Smaller grid means smaller Bonferroni haircut and less overfitting surface. |
+| **marketCap fetcher fixed** | yfinance attribute name changed; lookup had been silently returning `None`. Cosmetic — the dependent filter is redundant on NDX anyway. |
+
+---
+
+## Performance (v3 WFO OOS, strategy-only, monthly resampled)
+
+5.5 years of out-of-sample data (May 2020 – Nov 2025), £30k starting capital, £750/month contributions subtracted from equity to isolate strategy P&L.
+
+| Metric | ICS v2.0 | Equal-weight BH-NDX | Alpha |
+|---|---|---|---|
+| CAGR | +29.7% | +25.1% | **+4.6%** |
+| Max drawdown | **-11.2%** | -21.9% | -10.7 pts |
+| Monthly Sharpe (Bonferroni haircut @ 18 tests) | **+1.74** | +1.20¹ | **+0.54** |
+| Calmar | 4.20 | 1.16 | +3.04 |
+| Sortino | 4.29 | 1.05 | +3.24 |
+| 2022 return (NDX bear) | **+37.3%** | -12.7% | +50 pts |
+| 2025 return (NDX rally) | +32.3% | +85.5% | -53 pts |
+
+¹ Benchmark has no parameter search, so raw is the right comparison.
+
+**Six independent biases removed during validation:** survivorship (PIT-NDX universe), capital contributions, returns autocorrelation, parameter multi-testing (Bonferroni 18-combo grid), three explicit regime filters, one watchlist filter. Plus benchmarked against equal-weight buy-and-hold of the same universe.
+
+---
+
+## What this strategy is — and isn't
+
+**It is:** a long-only swing strategy that earns ~+0.5 risk-adjusted alpha and ~+5% CAGR over passive buy-and-hold of the same universe, primarily through bear-market defensiveness and drawdown limitation. Strategy delivered +37% during 2022 (NDX -33%) and survived with -11% max DD vs benchmark -22%.
+
+**It isn't:** a strategy that beats passive indexing every year. In strong bull years (2025: BH +85%, strategy +32%), the strategy gives back significant upside in exchange for defensive smoothness. The 2025 underperformance is the cost of the 2022 outperformance — a real trade-off, not a flaw.
+
+**It depends on:** the HMA trend-following entry logic continuing to act as an implicit regime filter. The strategy has no explicit VIX or market-state gate; bear-market protection comes from HMA not firing bullish on falling names. If a future regime breaks this implicit filtering (e.g. choppy markets with frequent false HMA flips), the alpha mechanism could weaken.
 
 ---
 
 ## Project layout
 
 ```
-trading-bot/
-├── ics/
-│   ├── config.py              # capital, fees, parameters, env loading
-│   ├── data.py                # yfinance + parquet cache
-│   ├── indicators.py          # HMA, RSI, ATR, RS, bull-flag detector
-│   ├── signals.py             # 6-condition convergence + market filter
-│   ├── sizing.py              # risk-based sizing, caps, cooldowns
-│   ├── slippage.py            # microstructure cost model
-│   ├── regime.py              # broad-market regime filter
-│   ├── backtest.py            # event-driven backtest engine
-│   ├── wfo.py                 # walk-forward optimiser
-│   ├── multi_wfo.py           # WFO across multiple objectives
-│   ├── montecarlo.py          # parametric + shuffle MC
-│   ├── stability.py           # parameter-stability analysis
-│   ├── revalidation.py        # OOS revalidation harness
-│   ├── compare.py             # strategy comparison tooling
-│   ├── compare_variants.py    # variant sweep reports
-│   ├── performance.py         # CAGR, Sharpe, Sortino, MDD, Calmar
-│   ├── live.py                # live engine + scheduler
-│   ├── paper_trader.py        # paper-trading layer
-│   ├── paper_status.py        # paper P&L reporting
-│   ├── preflight.py           # pre-launch sanity checks
-│   ├── notifier.py            # Telegram alerts + command listener
-│   ├── reporter.py            # PNG charts + summary.txt + trades.csv
-│   ├── watchlist.py           # universe filter
-│   ├── constituents.py        # index constituents loader
-│   ├── sp500_constituents.py  # point-in-time S&P 500 history
-│   ├── earnings.py            # earnings calendar blackouts
-│   ├── db.py                  # SQLite persistence
-│   ├── logging_utils.py
-│   └── cli.py                 # `python -m ics.cli ...`
-├── tests/                     # 18 test files, no network required
-├── .github/workflows/         # CI: pytest on push and PR
-├── .env.example               # copy to .env and fill in
-├── .gitignore
-├── requirements.txt
-├── Dockerfile
-├── ics-bot.service            # systemd unit for Pi deployment
-├── DEPLOYMENT.md              # runbook
-└── LICENSE
+ics/
+├── cli.py              entry point: backtest, wfo, live, scan, refresh-watchlist
+├── config.py           strategy, regime filter, contribution, and live params
+├── backtest.py         single-spec backtest engine
+├── wfo.py              walk-forward optimisation (18-combo grid)
+├── signals.py          HMA/VWAP/Bollinger/RSI signal generation
+├── indicators.py       technical indicator implementations
+├── data.py             yfinance loaders, FX, market caps
+├── watchlist.py        liquidity/structure filters; produces watchlist.csv
+├── constituents.py     PIT-NDX membership accessor (via n100tickers)
+├── sp500_constituents.py  PIT-S&P 500 (alternate universe, untested in v2.0)
+├── regime.py           SPY-SMA / VIX / SPY-DD filter checks (all disabled in v2.0)
+├── live.py             intraday/daily scan loop + Telegram handlers
+├── paper_trader.py     paper-mode position management
+├── notifier.py         Telegram integration
+├── reporter.py         writes equity_gbp.csv / trades.csv / plots
+├── montecarlo.py       MC bootstrap on trade list
+└── db.py               SQLite layer
+src/
+├── 25_sharpe_analysis.py    per-trade Sharpe + Harvey-Liu haircut
+├── 26_drawdown_analysis.py  drawdown metrics from equity_gbp.csv
+├── 27_equity_sharpe_analysis.py  equity-level Sharpe with autocorr resample
+└── 28_buyhold_benchmark.py  equal-weight PIT-NDX buy-and-hold comparison
+tests/                  pytest suite covering core engine, regime, paper trader, slippage
+ics-bot.service         systemd unit for Pi deployment
+DEPLOYMENT.md           Pi 5 / Docker deployment runbook
 ```
-
-`data/`, `logs/` and `wfo_results/` are created at runtime and are gitignored.
 
 ---
 
 ## Setup
 
-### macOS / Linux dev
+Requirements: Python 3.11+, a Telegram bot token, a yfinance-accessible network.
 
 ```bash
-git clone https://github.com/thisisfed/trading-bot.git
-cd trading-bot
+git clone https://github.com/<you>/ics.git
+cd ics
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # fill in TELEGRAM_TOKEN / TELEGRAM_CHAT_ID
-pytest -q tests
-```
-
-### Raspberry Pi 5 (production)
-
-```bash
-sudo apt update && sudo apt install -y python3.11 python3.11-venv git
-git clone https://github.com/thisisfed/trading-bot.git ~/trading-bot
-cd ~/trading-bot
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env && nano .env
-
-sudo cp ics-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable ics-bot
-sudo systemctl start ics-bot
-journalctl -u ics-bot -f
-```
-
-The systemd unit uses `Restart=on-failure` with a 15s back-off, so a crash
-loop won't hammer the network. SIGTERM is handled cleanly.
-
-### Docker (alternative)
-
-```bash
-docker build -t ics-bot .
-docker run -d --restart unless-stopped \
-    --env-file .env \
-    -v $(pwd)/data:/app/data \
-    -v $(pwd)/logs:/app/logs \
-    ics-bot
+pip install git+https://github.com/jmccarrell/n100tickers.git   # PIT-NDX
+cp .env.example .env
+# Edit .env: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TRADING_MODE=paper, TZ
 ```
 
 ---
 
 ## Usage
 
-### Refresh the watchlist
+All CLI commands run from the project root:
+
 ```bash
+# Refresh the watchlist (PIT-NDX → liquidity-filtered universe)
 python -m ics.cli refresh-watchlist
-```
 
-### One-shot full test (refresh + backtest + WFO + MC + reports)
-```bash
-python -m ics.cli fulltest --start 2019-01-01 --name v2_full
-```
+# One-shot backtest with default params on the current watchlist
+python -m ics.cli backtest --from-watchlist --start 2019-01-01 --name my_test
 
-### Targeted backtest
-```bash
-python -m ics.cli backtest --from-watchlist --start 2019-01-01 --mc --name v2_bt
-```
-
-### Walk-forward optimisation
-```bash
-python -m ics.cli wfo --from-watchlist --start 2019-01-01 \
+# Walk-forward OOS validation (5-10 min for the 18-combo grid)
+python -m ics.cli wfo --start 2019-01-01 \
     --is-days 504 --oos-days 252 --step-days 252 \
-    --objective sharpe --mc --name v2_wfo
-```
+    --objective sharpe --mc --name my_wfo
 
-Real WFO: grid-search the parameter space on each in-sample window, pick the
-best combination by the chosen objective, then evaluate only that combination
-on the untouched OOS window. The OOS equity curves are stitched into a single
-continuous series. If the strategy has a real edge, this curve grows.
-If it's curve-fitted noise, it goes nowhere.
+# Run a single live scan (one-shot, no loop)
+python -m ics.cli scan
 
-### Run the live engine
-```bash
+# Start the live engine (typically run under systemd; honours TRADING_MODE)
 python -m ics.cli live
 ```
 
-### Trigger a one-off scan
+Reports land in `data/reports/<name>/` with `equity_gbp.csv`, `trades.csv`, `summary.txt`, and equity/drawdown plots.
+
+---
+
+## Analysis tooling
+
+Four standalone scripts under `src/` evaluate the strategy against academic thresholds:
+
 ```bash
-python -m ics.cli scan
+# Per-trade Sharpe with Harvey-Liu Bonferroni haircut
+python src/25_sharpe_analysis.py data/reports/my_wfo/trades.csv --tests 18
+
+# Drawdown and risk-adjusted metrics from the equity curve
+python src/26_drawdown_analysis.py data/reports/my_wfo/equity_gbp.csv \
+    --contributions data/reports/my_wfo/contributions_gbp.csv
+
+# Equity-level Sharpe with optional monthly resample to dampen autocorrelation
+python src/27_equity_sharpe_analysis.py data/reports/my_wfo/equity_gbp.csv \
+    --contributions data/reports/my_wfo/contributions_gbp.csv \
+    --tests 18 --resample M
+
+# Equal-weight buy-and-hold benchmark on the same universe / dates / contributions
+python src/28_buyhold_benchmark.py
+python src/27_equity_sharpe_analysis.py data/reports/buyhold_ndx/equity_gbp.csv \
+    --contributions data/reports/buyhold_ndx/contributions_gbp.csv \
+    --tests 1 --resample M
 ```
 
-### Run the test suite (no network)
-```bash
-pytest -q tests
-```
+The `--tests` flag applies the Harvey-Liu (2015) Bonferroni-style haircut for parameter-search multi-testing. The current WFO grid has 18 combinations; for a single pre-specified backtest use `--tests 1`.
 
 ---
 
 ## Telegram commands
 
-Once the live engine is running, message the bot:
+The live bot accepts these commands from the configured chat:
 
-| Command   | Effect                                                          |
-|-----------|-----------------------------------------------------------------|
-| `/status` | Uptime, last scan / refresh / summary timestamps, equity        |
-| `/ping`   | Liveness check                                                  |
-| `/scan`   | Trigger a manual scan now                                       |
-| `/refresh`| Refresh the watchlist now                                       |
-| `/equity` | Show last-known equity                                          |
-| `/help`   | List all commands                                               |
+| Command | Action |
+|---|---|
+| `/status` | Bot health, last scan time, next scan, scan mode |
+| `/paper` | Current paper portfolio: equity, P&L, open positions, win rate |
+| `/scan` | Trigger a manual scan immediately |
+| `/refresh` | Force a watchlist refresh |
+| `/regime` | Current market-regime view (informational; filters disabled in v2.0) |
+| `/equity` | Equity curve snapshot |
+| `/help` | List commands |
 
-The listener whitelists messages from `TELEGRAM_CHAT_ID`. Anyone else is
-ignored and logged.
-
----
-
-## Strategy summary
-
-Convergence of six binary conditions on daily bars:
-
-1. Close > HMA(55) **and** HMA(55) sloping up
-2. Volume > 1.5× 20-day-avg volume
-3. RSI(14) ∈ (55, 75)
-4. RS vs SPY > 0 (21-day relative-strength outperformance)
-5. Bull-flag active **or** breakout confirmed
-6. Close > HMA(20) **and** HMA(20) sloping up
-
-Plus a broad-market filter: SPY > HMA(SPY, 55) **and** SPY HMA sloping up.
-
-- **Tier 1** (4+ conditions met AND breakout/flag present): pyramid-eligible.
-- **Tier 2** (3+ conditions met): single tranche, no pyramid.
-
-### Position sizing
-- 0.75% initial risk per trade (configurable in `config.RISK_PARAMS`)
-- 0.5% extra on Tier 1 add at +6% from entry; total ≤ 1.5%
-- 20% position-size cap of equity
-- Absolute share cap (sanity)
-- 5-day cooldown per ticker after any exit
-
-### Exits
-- Stop (initial or trailing) — priority
-- Target (measured-move from flag, else 3R fallback)
-
-### Costs (Robinhood UK ISA)
-- Commission: £0.00
-- SEC fee on sells: 0.0027% of USD notional
-- TAF on sells: $0.000166 per share, capped $8.30
-- FX markup: 0.03% per side
-- Slippage: 10 bps per side
+`/paper` is read-only — it does not open trades. The bot opens paper positions automatically on its scan schedule (see `LIVE_PARAMS.scan_mode`).
 
 ---
 
-## A note on backtest results
+## Deployment workflow
 
-The in-sample backtest (2019–present, watchlist universe, £30,000 start) can
-show something like **+800% / 35% CAGR / 1.28 Sharpe**. **Do not believe this
-number.**
+The honest deployment path:
 
-A proper walk-forward run on the same period typically shows **flat to
-positive** OOS CAGR with a markedly lower profit factor and most of the
-in-sample alpha gone. That is because:
+1. **Run paper mode for 3-6 months.** `TRADING_MODE=paper` in `.env`. The bot scans on schedule and records virtual trades to the DB.
+2. **Track live equity Sharpe weekly** via `/paper` and the `26_/27_` analysis scripts on the live `equity_gbp.csv`.
+3. **First gate (3 months):** if live equity Sharpe ≥ 0.5, continue. If < 0, pause and investigate. The expected paper-to-live haircut is 30-50% — a 1.74 backtest Sharpe might land 0.8-1.2 live.
+4. **Second gate (6 months):** if live Sharpe ≥ 0.8 *and* max DD ≤ 10%, consider switching to `TRADING_MODE=live` at 25-50% target position size.
+5. **Full size (12 months):** if both metrics hold at small size, scale to full size.
 
-1. `BASE_UNIVERSE` is a hand-picked 2024–25 momentum list applied back to
-   2019 — classic survivorship bias. Stocks that blew up between 2019 and
-   2024 aren't in the list.
-2. P&L is concentrated in a handful of names (one ticker = ~45% of total
-   profit in a sample run). That is a luck signature, not a robust edge.
-
-**Use the WFO output, not the backtest output, when deciding whether to
-deploy this with real money.** And consider: even the WFO numbers are still
-contaminated by survivorship bias unless `BASE_UNIVERSE` is rebuilt from a
-point-in-time index-constituents source (the codebase supports a NASDAQ-100
-point-in-time mode via `sp500_constituents.py` and `constituents.py`).
+The systemd unit at `ics-bot.service` runs the bot under a non-root user; logs via `journalctl -u ics-bot.service`. See `DEPLOYMENT.md` for the Pi 5 setup details.
 
 ---
 
-## What I learned building this
+## Caveats and known limitations
 
-- Beautiful backtests are almost always wrong. Walk-forward optimisation
-  and Monte Carlo aren't optional; they're the bare minimum.
-- Cost modelling matters. Ignoring SEC fees, TAF, FX markup and slippage
-  inflates returns into nonsense.
-- Survivorship bias is the silent killer. The hardest part of building
-  this wasn't the strategy — it was hunting down a point-in-time universe.
-- Production-grade reliability is its own discipline. Most of the
-  late-stage work was systemd hardening, signal handling, restart logic,
-  and watchdogs — not strategy code.
+- **Long-only.** No short component, no portfolio hedging. In a sustained bear market lasting >12 months (e.g. 2000-2002), the strategy has not been forward-tested.
+- **Universe-specific.** Validated on NASDAQ-100. Performance on S&P 500 or other indices is untested in v2.0 — different universe likely produces different results.
+- **Concurrent position correlation.** The bot can hold multiple correlated tech names simultaneously. A sector cap or vol-target would reduce this; both are on the v3.0 candidate list.
+- **No fee/slippage modelling in the backtest.** Real-world execution will incur ~10-20 bps per round-trip in fees and another 5-15 bps in slippage. Already mostly factored into the live Sharpe expectation.
+- **2025 underperformance is real.** Equal-weight buy-and-hold returned +85% in 2025; the strategy returned +32%. This will repeat in any strong narrow bull market. The strategy earns its alpha in bear and choppy regimes — be prepared for stretches of relative underperformance.
+
+---
+
+## Roadmap (post-paper-validation)
+
+If 6 months of paper trading confirms the live Sharpe holds ≥ 0.8, the v3.0 candidate list is:
+
+1. **Volatility targeting** — scale total portfolio exposure to target 15% annualised vol. Highest-EV legitimate Sharpe improvement.
+2. **Sector concentration limits** — cap N positions per GICS sector to reduce concurrent correlation.
+3. **Earnings filter** — exclude entries within 5 trading days of scheduled earnings.
+4. **Mean-reversion overlay** — a second, low-correlation strategy on the same universe for combined-Sharpe diversification.
+
+None of these are committed; each requires the same validation rigour as v2.0 before adoption.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[Your license here — MIT, BSD, etc.]
 
-## Disclaimer
+---
 
-This is a personal learning project. **Not financial advice. Not for
-production use with real money.** Backtest results are not indicative of
-future performance. Trade only what you can afford to lose.
+## Acknowledgements
+
+PIT-NDX membership via [n100tickers](https://github.com/jmccarrell/n100tickers) by Jason McCarrell. yfinance for price data. Methodology drawing on Harvey & Liu (2015) "Backtesting" for the Bonferroni haircut framework.
