@@ -223,9 +223,15 @@ None of these are committed; each requires the same validation rigour as v2.0 be
 
 ---
 
+## Disclaimer
+
+This software is provided for educational and research purposes only. It is not financial advice and nothing in this repository constitutes a recommendation to buy or sell any security. Trading involves substantial risk of loss and is not suitable for every investor. Past performance — including any backtests, walk-forward results, or paper-trading metrics presented here — is not indicative of future results. The author assumes no responsibility for any losses incurred from use of this software. Use at your own risk.
+
+---
+
 ## License
 
-[Your license here — MIT, BSD, etc.]
+MIT — see [LICENSE](LICENSE).
 
 ---
 
